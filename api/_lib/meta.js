@@ -1,12 +1,4 @@
-const {
-  metaApiVersion,
-  metaAccessToken,
-  metaPhoneNumberId,
-  defaultLanguage,
-  templateParameterMode,
-  rsvpConfirmedTemplate,
-  rsvpDeclinedTemplate
-} = require('./config');
+const { metaApiVersion, metaAccessToken, metaPhoneNumberId, defaultLanguage, templateParameterMode, rsvpConfirmedTemplate, rsvpDeclinedTemplate } = require('./config');
 
 async function postMetaMessage(body) {
   if (!metaAccessToken || !metaPhoneNumberId) {
@@ -34,16 +26,6 @@ async function sendTemplate(phoneNumber, templateName, components = [], language
   };
   if (components && components.length) body.template.components = components;
   return postMetaMessage(body);
-}
-
-async function sendText(phoneNumber, text) {
-  return postMetaMessage({
-    messaging_product: 'whatsapp',
-    recipient_type: 'individual',
-    to: phoneNumber,
-    type: 'text',
-    text: { preview_url: false, body: text }
-  });
 }
 
 const invitationValues = ({ guestName, hostOne, hostTwo, brideName, groomName, cardsCount }) => ([
@@ -80,6 +62,8 @@ async function sendWeddingInvitation(params) {
     return sendTemplate(params.phoneNumber, templateName, invitationComponents(params, mode), languageCode);
   }
 
+  // Auto mode: try named variables first because the supplied developer package uses names.
+  // If Meta rejects the parameter format, retry numbered {{1}}..{{6}} templates automatically.
   const named = await sendTemplate(params.phoneNumber, templateName, invitationComponents(params, 'named'), languageCode);
   if (named.status === 'sent' || !looksLikeParameterModeError(named.error)) return named;
 
@@ -89,40 +73,46 @@ async function sendWeddingInvitation(params) {
 }
 
 async function sendRsvpConfirmed(phoneNumber) {
-  // First try the approved template. If it fails, fall back to a normal text message
-  // because the guest just replied, so the 24-hour service window is open.
-  const templated = await sendTemplate(phoneNumber, rsvpConfirmedTemplate || 'dawaa_rsvp_confirmed', [], defaultLanguage);
-  if (templated.status === 'sent') return templated;
-  const text = await sendText(phoneNumber, 'شكراً لتأكيد حضوركم، تم تسجيل الرد بنجاح. نسعد بحضوركم.');
-  return text.status === 'sent' ? { ...text, templateFallbackError: templated.error } : { ...templated, textFallbackError: text.error };
+  return sendTemplate(phoneNumber, rsvpConfirmedTemplate, [], defaultLanguage);
 }
 
 async function sendRsvpDeclined(phoneNumber) {
-  const templated = await sendTemplate(phoneNumber, rsvpDeclinedTemplate || 'dawaa_rsvp_declined', [], defaultLanguage);
-  if (templated.status === 'sent') return templated;
-  const text = await sendText(phoneNumber, 'شكراً على ردكم، تم تسجيل الاعتذار بنجاح.');
-  return text.status === 'sent' ? { ...text, templateFallbackError: templated.error } : { ...templated, textFallbackError: text.error };
+  return sendTemplate(phoneNumber, rsvpDeclinedTemplate, [], defaultLanguage);
 }
 
 async function sendCardCountSelection(phoneNumber, guestName, cardsCount) {
-  const rows = Array.from({ length: Number(cardsCount || 1) }, (_, i) => {
-    const count = i + 1;
-    return { id: `card_count_${count}`, title: `${count} ${count === 1 ? 'شخص' : 'أشخاص'}`, description: `تأكيد حضور ${count} من أصل ${cardsCount}` };
-  });
-  const body = {
+  const totalCards = Math.max(1, Number(cardsCount || 1));
+
+  const visibleCounts = totalCards <= 10
+    ? Array.from({ length: totalCards }, (_, i) => i + 1)
+    : [1, 2, 3, 4, 5, 6, 7, 8, 9, totalCards];
+
+  const rows = visibleCounts.map((count) => ({
+    id: `card_count_${count}`,
+    title: count === totalCards ? `${count} بطاقات (الكل)` : `${count} ${count === 1 ? 'بطاقة' : 'بطاقات'}`,
+    description: count === totalCards
+      ? `تأكيد حضور جميع البطاقات (${totalCards})`
+      : `تأكيد حضور ${count} من أصل ${totalCards}`
+  }));
+
+  return postMetaMessage({
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
     to: phoneNumber,
     type: 'interactive',
     interactive: {
       type: 'list',
-      header: { type: 'text', text: 'تأكيد عدد الحضور' },
-      body: { text: `الفاضلة / ${guestName || '-'}\nيرجى اختيار عدد الحضور من البطاقات المخصصة لكم.` },
+      header: { type: 'text', text: 'تأكيد عدد البطاقات' },
+      body: {
+        text: `الفاضلة / ${guestName || '-'}\nلديكم ${totalCards} ${totalCards === 1 ? 'بطاقة' : 'بطاقات'} مخصصة.\nيرجى اختيار عدد البطاقات التي تريدون تأكيد حضورها.`
+      },
       footer: { text: 'دعوة Events' },
-      action: { button: 'اختيار العدد', sections: [{ title: 'عدد الحضور', rows }] }
+      action: {
+        button: 'اختيار العدد',
+        sections: [{ title: 'عدد البطاقات', rows }]
+      }
     }
-  };
-  return postMetaMessage(body);
+  });
 }
 
-module.exports = { postMetaMessage, sendTemplate, sendText, sendWeddingInvitation, sendRsvpConfirmed, sendRsvpDeclined, sendCardCountSelection };
+module.exports = { sendTemplate, sendWeddingInvitation, sendRsvpConfirmed, sendRsvpDeclined, sendCardCountSelection };
